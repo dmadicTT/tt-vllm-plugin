@@ -9,6 +9,7 @@ import vllm.envs as envs
 from vllm.inputs import ProcessorInputs, PromptType
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
+from vllm.utils import DEFAULT_MAX_NUM_BATCHED_TOKENS
 
 from vllm.platforms.interface import Platform, PlatformEnum
 
@@ -26,7 +27,7 @@ logger = init_logger(__name__)
 class TTPlatform(Platform):
     _enum = PlatformEnum.OOT  # Out-of-tree platform
     device_name: str = "tt"
-    device_type: str = "tt"
+    device_type: str = "privateuseone"
 
     @classmethod
     def is_async_output_supported(cls, enforce_eager: Optional[bool]) -> bool:
@@ -38,8 +39,17 @@ class TTPlatform(Platform):
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
-        assert not vllm_config.scheduler_config.chunked_prefill_enabled, (
-            "Chunked prefill is not yet supported for TT backend")
+                # Disable chunked prefill for TT backend (not yet supported)
+        logger.info(
+            "Chunked prefill is not yet supported for TT backend; disabling it."
+        )
+        vllm_config.scheduler_config.enable_chunked_prefill = False
+        vllm_config.scheduler_config.chunked_prefill_enabled = False
+        vllm_config.scheduler_config.max_num_batched_tokens = max(
+            vllm_config.scheduler_config.max_model_len,
+            DEFAULT_MAX_NUM_BATCHED_TOKENS,
+        )
+
         assert not vllm_config.speculative_config, (
             "Speculative decoding is not yet supported for TT backend")
         assert (vllm_config.parallel_config.tensor_parallel_size == 1
@@ -47,15 +57,28 @@ class TTPlatform(Platform):
                 == 1), "TT backend does not support distributed execution"
         assert not vllm_config.lora_config, (
             "LoRA is not supported for TT backend")
-        assert not vllm_config.cache_config.enable_prefix_caching, (
-            "Automatic prefix caching is not yet supported for TT backend")
+        
+        # Set default block_size if not specified by user
+        cache_config = vllm_config.cache_config
+        if cache_config and cache_config.block_size is None:
+            cache_config.block_size = 16
+       
+        # Disable prefix caching for TT backend (not yet supported)
+        logger.info(
+            "Prefix caching is not yet supported for TT backend; disabling it."
+        )
+        vllm_config.cache_config.enable_prefix_caching = False
 
         parallel_config = vllm_config.parallel_config
         if parallel_config.worker_cls == "auto":
             if envs.VLLM_USE_V1:
                 parallel_config.worker_cls = "tt_vllm_plugin.v1.worker.tt_worker.TTWorker"
-                vllm_config.scheduler_config.scheduler_cls = (
-                    "vllm.v1.core.sched.ascend_scheduler.AscendScheduler")
+                # Use the default scheduler - AscendScheduler is only available in tt-vllm fork
+                # The default scheduler works fine for TT platform
+                if vllm_config.scheduler_config.scheduler_cls is None:
+                    vllm_config.scheduler_config.scheduler_cls = (
+                        "vllm.v1.core.sched.scheduler.Scheduler"
+                    )
             else:
                 # V0 not supported in plugin, but keep for compatibility
                 raise ValueError("TT plugin only supports vLLM v1 architecture. Set VLLM_USE_V1=1")
@@ -74,7 +97,7 @@ class TTPlatform(Platform):
         # TODO move this to tt_model_runner when request validation
         # stops depending on vllm_config
 
-        override_tt_config = vllm_config.model_config.override_tt_config
+        override_tt_config = {}
         if (override_tt_config is not None
                 and "sample_on_device_mode" in override_tt_config):
             sample_on_device_mode = override_tt_config["sample_on_device_mode"]

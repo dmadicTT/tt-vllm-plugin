@@ -5,6 +5,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Optional, Union
 
 import torch
+import torch.nn as nn
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
@@ -19,11 +20,14 @@ from tt_vllm_plugin.worker.tt_model_runner import TTModelInput
 from tt_vllm_plugin.worker.tt_worker import (close_mesh_device, get_mesh_grid,
                                    get_num_available_blocks_tt,
                                    open_mesh_device)
+from vllm.tasks import SupportedTask
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = init_logger(__name__)
+print("=== tt_worker.py module is being imported ===")
+logger.info("=== tt_worker.py module is being imported ===")
 
 
 class TTWorker(WorkerBase):
@@ -36,11 +40,14 @@ class TTWorker(WorkerBase):
         distributed_init_method: str,
         is_driver_worker: bool = True,
     ):
+        logger.info("Initializing TT worker...")
+        print("Initializing TT worker...")
         super().__init__(vllm_config, local_rank, rank,
                          distributed_init_method, is_driver_worker)
 
         # Initialized by init_device
         self.mesh_device = None
+        self.model_config.override_tt_config = {}
 
         # Whether to use ttnn tracing for model execution
         override_tt_config = self.model_config.override_tt_config
@@ -52,6 +59,7 @@ class TTWorker(WorkerBase):
             self.trace_mode = override_tt_config[trace_key]
 
     def init_device(self) -> None:
+        logger.info("Initializing TT device...")
         dp_rank = self.vllm_config.parallel_config.data_parallel_rank
         if dp_rank == 0:
             self.mesh_device = open_mesh_device(
@@ -246,3 +254,10 @@ class TTWorker(WorkerBase):
         if hasattr(super(), '__del__'):
             super().__del__()  # type: ignore
 
+    def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
+        """Get supported tasks by delegating to the model runner."""
+        return self.model_runner.get_supported_tasks()
+    
+    def get_model(self) -> nn.Module:
+        """Get the underlying model."""
+        return self.model_runner.get_model()

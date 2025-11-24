@@ -18,12 +18,17 @@ class TTModelLoader(BaseModelLoader):
                    model_config: ModelConfig) -> nn.Module:
         """Load a model with the given configurations."""
 
+        logger.info("Loading model on TT platform...")
+
         device_config = vllm_config.device_config
         scheduler_config = vllm_config.scheduler_config
 
         model_class, _ = get_model_architecture(model_config)
-        optimizations = model_config.override_tt_config.get(
-            "optimizations", None)
+        # Fix: Check if override_tt_config exists before calling .get()
+        optimizations = None
+        if model_config.override_tt_config:
+            optimizations = model_config.override_tt_config.get("optimizations", None)
+        
         if optimizations is not None:
             assert optimizations in [
                 "performance", "accuracy"

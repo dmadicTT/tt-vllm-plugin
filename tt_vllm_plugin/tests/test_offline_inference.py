@@ -46,7 +46,6 @@ def test_offline_inference_basic():
     # The plugin should be automatically discovered via entry points
     llm = LLM(
         model=model,
-        device="tt",  # Use TT platform
         max_model_len=2048,
         max_num_seqs=1,
         # TT-specific configuration

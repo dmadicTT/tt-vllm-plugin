@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 import ttnn
+import torch.nn as nn
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
@@ -21,6 +22,12 @@ from tt_vllm_plugin.platform import TTPlatform
 from tt_vllm_plugin.v1.worker.tt_input_batch import CachedRequestState, InputBatch
 from tt_vllm_plugin.worker.tt_model_runner import (TTModelInput, TTSamplingParams,
                                          sample_tokens)
+
+from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
+from vllm.model_executor.models.interfaces_base import (
+    is_pooling_model,
+    is_text_generation_model,
+)
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -46,7 +53,7 @@ class TTModelRunner:
         self.parallel_config = vllm_config.parallel_config
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
-        self.prompt_adapter_config = vllm_config.prompt_adapter_config
+        # self.prompt_adapter_config = vllm_config.prompt_adapter_config
         self.observability_config = vllm_config.observability_config
         self.device_config = vllm_config.device_config
 
@@ -80,6 +87,7 @@ class TTModelRunner:
         self.requests: dict[str, CachedRequestState] = {}
 
     def load_model(self) -> None:
+        logger.info("Loading TT model...")
         loader = TTModelLoader(self.load_config)
         self.model = loader.load_model(vllm_config=self.vllm_config,
                                        model_config=self.model_config)
@@ -210,8 +218,7 @@ class TTModelRunner:
             self.requests[req_id] = CachedRequestState(
                 req_id=req_id,
                 prompt_token_ids=new_req_data.prompt_token_ids,
-                mm_inputs=new_req_data.mm_inputs,
-                mm_positions=new_req_data.mm_positions,
+                mm_features=new_req_data.mm_features,
                 sampling_params=sampling_params,
                 pooling_params=None,
                 generator=None,
@@ -815,4 +822,43 @@ class TTModelRunner:
             prompt_logprobs_dict=prompt_logprobs_dict,
             pooler_output=[],
         )
+    
+    def get_model(self) -> nn.Module:
+        """Get the underlying model."""
+        return self.model
 
+    def get_supported_generation_tasks(self) -> list[GenerationTask]:
+        """Get supported generation tasks for this model."""
+        model = self.get_model()
+        supported_tasks = list[GenerationTask]()
+        
+        if is_text_generation_model(model):
+            supported_tasks.append("generate")
+        
+        # Add transcription support if the model supports it
+        # (uncomment if needed)
+        # from vllm.model_executor.models.interfaces import supports_transcription
+        # if supports_transcription(model):
+        #     if model.supports_transcription_only:
+        #         return ["transcription"]
+        #     supported_tasks.append("transcription")
+        
+        return supported_tasks
+
+    def get_supported_pooling_tasks(self) -> list[PoolingTask]:
+        """Get supported pooling tasks for this model."""
+        model = self.get_model()
+        if not is_pooling_model(model):
+            return []
+        return list(model.pooler.get_supported_tasks())
+
+    def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
+        """Get all supported tasks for this model runner."""
+        tasks = list[SupportedTask]()
+        
+        if self.model_config.runner_type == "generate":
+            tasks.extend(self.get_supported_generation_tasks())
+        if self.model_config.runner_type == "pooling":
+            tasks.extend(self.get_supported_pooling_tasks())
+        
+        return tuple(tasks)    

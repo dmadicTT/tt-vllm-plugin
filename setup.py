@@ -52,7 +52,7 @@ setup(
         # Note: ttnn should be installed separately as it's platform-specific
         # torch version should match vLLM's requirements
     ],
-    python_requires=">=3.11, <3.12",
+    python_requires=">=3.10, <3.12",
     license="Apache-2.0",
     entry_points={"vllm.platform_plugins": ["tt = tt_vllm_plugin:register"]},
     description="vLLM plugin for Tenstorrent hardware acceleration",
