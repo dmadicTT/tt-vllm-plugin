@@ -19,6 +19,7 @@ import os
 os.environ["VLLM_USE_V1"] = "1"
 # os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"  
 os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
+os.environ["LLAMA_DIR"] = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
 
 from vllm import LLM, SamplingParams, ModelRegistry
 

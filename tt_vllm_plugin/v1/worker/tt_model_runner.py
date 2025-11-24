@@ -218,7 +218,6 @@ class TTModelRunner:
             self.requests[req_id] = CachedRequestState(
                 req_id=req_id,
                 prompt_token_ids=new_req_data.prompt_token_ids,
-                mm_features=new_req_data.mm_features,
                 sampling_params=sampling_params,
                 pooling_params=None,
                 generator=None,
@@ -226,6 +225,8 @@ class TTModelRunner:
                 num_computed_tokens=new_req_data.num_computed_tokens,
                 output_token_ids=[],
                 lora_request=new_req_data.lora_request,
+                mm_kwargs=getattr(new_req_data, 'mm_kwargs', []),
+                mm_positions=getattr(new_req_data, 'mm_positions', []),
             )
 
             req_ids_to_add.append(req_id)
