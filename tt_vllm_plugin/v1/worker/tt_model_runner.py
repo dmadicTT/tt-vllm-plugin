@@ -835,6 +835,17 @@ class TTModelRunner:
         
         if is_text_generation_model(model):
             supported_tasks.append("generate")
+        else:
+            # Fallback for TT models: Check if model has generation methods
+            # All TT models (LlamaForCausalLM, QwenForCausalLM, etc.) have these methods
+            if (hasattr(model, 'prefill_forward') and 
+                hasattr(model, 'decode_forward') and
+                self.model_config.runner_type == "generate"):
+                supported_tasks.append("generate")
+                logger.info(
+                    f"TT model {model.__class__.__name__} recognized as generation model "
+                    f"by method presence check"
+                )
         
         # Add transcription support if the model supports it
         # (uncomment if needed)

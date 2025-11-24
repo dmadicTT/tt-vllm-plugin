@@ -54,7 +54,10 @@ setup(
     ],
     python_requires=">=3.10, <3.12",
     license="Apache-2.0",
-    entry_points={"vllm.platform_plugins": ["tt = tt_vllm_plugin:register"]},
+    entry_points={
+        "vllm.platform_plugins": ["tt = tt_vllm_plugin:register"],
+        "vllm.general_plugins": ["tt_model_registry = tt_vllm_plugin:register_models"],
+    },
     description="vLLM plugin for Tenstorrent hardware acceleration",
     long_description=open("README.md").read() if __import__("os").path.exists("README.md") else "",
     long_description_content_type="text/markdown",
