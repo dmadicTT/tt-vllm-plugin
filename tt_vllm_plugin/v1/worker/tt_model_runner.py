@@ -324,7 +324,9 @@ class TTModelRunner:
 
     def _prepare_model_inputs(
             self, scheduler_output: "SchedulerOutput") -> TTModelInput:
-
+        """
+        Prepare model inputs, supporting mixed prefill/decode batches.
+        """
         assert scheduler_output.total_num_scheduled_tokens > 0
         input_batch = self.input_batch
         num_reqs = input_batch.num_reqs
@@ -348,46 +350,111 @@ class TTModelRunner:
                                        self.cache_config.block_size)
             block_tables = block_tables[:, :max_blocks_in_batch]
 
-        # NOTE: We assume that all sequences in the group are all prompts or
-        # all decodes.
-        is_prompt = len(scheduler_output.scheduled_new_reqs) > 0
-        if is_prompt:
-            # Assert no running requests
-            assert (
-                len(scheduler_output.scheduled_cached_reqs.req_ids) == 0
-            ), "Currently only supporting all prefills or all decodes in batch"
-
-            input_positions = 0
-            max_prompt_tokens = max(input_batch.num_prompt_tokens[:num_reqs])
-            input_tokens = input_batch.token_ids_cpu_tensor[:num_reqs, :
-                                                            max_prompt_tokens]
-            prompt_lens = input_batch.num_prompt_tokens[:num_reqs]
+        # Determine which requests are prefill vs decode
+        # In v1, new requests are prefill, cached requests are decode
+        scheduled_new_req_ids = {req.req_id for req in scheduler_output.scheduled_new_reqs}
+        is_prefill_list = []
+        
+        for req_idx in range(num_reqs):
+            req_id = input_batch.req_ids[req_idx]
+            is_prefill = req_id in scheduled_new_req_ids
+            is_prefill_list.append(is_prefill)
+        
+        is_prefill_tensor = torch.tensor(is_prefill_list, dtype=torch.bool)
+        num_prefill = is_prefill_tensor.sum().item()
+        num_decode = num_reqs - num_prefill
+        
+        # Check if batch is mixed
+        is_mixed = num_prefill > 0 and num_decode > 0
+        
+        if is_mixed:
+            # Mixed batch: prepare unified tensors for prefill and decode
+            prefill_indices = torch.where(is_prefill_tensor)[0]
+            decode_indices = torch.where(~is_prefill_tensor)[0]
+            
+            # Get max prompt tokens for prefill requests
+            if len(prefill_indices) > 0:
+                max_prompt_tokens = max(
+                    input_batch.num_prompt_tokens[i] for i in prefill_indices
+                )
+            else:
+                max_prompt_tokens = 1
+            
+            # Create unified input_tokens tensor
+            # Shape: [num_reqs, max(max_prompt_tokens, 1)]
+            # For prefill: fill in prompt tokens
+            # For decode: fill in single token at position 0, rest is padding
+            max_seq_len = max(max_prompt_tokens, 1)
+            input_tokens = torch.zeros(
+                (num_reqs, max_seq_len), dtype=torch.int32
+            )
+            
+            # Fill prefill tokens
+            if len(prefill_indices) > 0:
+                prefill_tokens = input_batch.token_ids_cpu_tensor[
+                    prefill_indices, :max_prompt_tokens
+                ]
+                input_tokens[prefill_indices, :max_prompt_tokens] = prefill_tokens
+            
+            # Fill decode tokens (single token at position 0)
+            # Create input_positions: 0 for prefill, actual position for decode
+            input_positions = torch.zeros(num_reqs, dtype=torch.int32)
+            if len(decode_indices) > 0:
+                decode_indices_np = decode_indices.numpy()
+                decode_positions = torch.from_numpy(
+                    input_batch.num_tokens[decode_indices_np] - 1
+                )
+                # Extract the last token for each decode request
+                decode_tokens = input_batch.token_ids_cpu_tensor[
+                    decode_indices, decode_positions
+                ].view(-1, 1)
+                input_tokens[decode_indices, 0:1] = decode_tokens
+                input_positions[decode_indices] = decode_positions
+            
+            # Create prompt_lens list: prefill has actual length, decode has -1
+            prompt_lens = [-1] * num_reqs
+            for idx in prefill_indices:
+                prompt_lens[idx] = int(input_batch.num_prompt_tokens[idx])
+            
+            # For multimodal, gather inputs (only prefill requests have mm inputs)
+            is_prompt_for_mm = len(prefill_indices) > 0
         else:
-            input_positions = torch.from_numpy(
-                input_batch.num_tokens[:num_reqs] - 1)
-            input_tokens = input_batch.token_ids_cpu_tensor[
-                torch.arange(num_reqs), input_positions].view(-1, 1)
-            prompt_lens = None
+            # Pure batch (all prefill or all decode) - use existing logic
+            is_prompt = num_prefill > 0
+            if is_prompt:
+                input_positions = 0
+                max_prompt_tokens = max(input_batch.num_prompt_tokens[:num_reqs])
+                input_tokens = input_batch.token_ids_cpu_tensor[:num_reqs, :
+                                                                max_prompt_tokens]
+                prompt_lens = input_batch.num_prompt_tokens[:num_reqs].tolist()
+            else:
+                input_positions = torch.from_numpy(
+                    input_batch.num_tokens[:num_reqs] - 1)
+                input_tokens = input_batch.token_ids_cpu_tensor[
+                    torch.arange(num_reqs), input_positions].view(-1, 1)
+                prompt_lens = None
 
-            # TODO: Remove once TT models can support arbitrary batch sizes.
-            # Pad batch to max_num_reqs.
-            if input_tokens.shape[0] < input_batch.max_num_reqs:
-                batch_pad = input_batch.max_num_reqs - input_tokens.shape[0]
-                input_tokens = torch.cat([
-                    input_tokens,
-                    torch.zeros(batch_pad, 1, dtype=torch.int32)
-                ])
-                # Pad positions with -1 to indicate no position
-                input_positions = torch.cat([
-                    input_positions,
-                    torch.ones(batch_pad, dtype=torch.int32) * -1
-                ])
-                block_tables = torch.cat([
-                    block_tables,
-                    torch.zeros(batch_pad,
-                                block_tables.shape[1],
-                                dtype=torch.int32)
-                ])
+                # TODO: Remove once TT models can support arbitrary batch sizes.
+                # Pad batch to max_num_reqs.
+                if input_tokens.shape[0] < input_batch.max_num_reqs:
+                    batch_pad = input_batch.max_num_reqs - input_tokens.shape[0]
+                    input_tokens = torch.cat([
+                        input_tokens,
+                        torch.zeros(batch_pad, 1, dtype=torch.int32)
+                    ])
+                    # Pad positions with -1 to indicate no position
+                    input_positions = torch.cat([
+                        input_positions,
+                        torch.ones(batch_pad, dtype=torch.int32) * -1
+                    ])
+                    block_tables = torch.cat([
+                        block_tables,
+                        torch.zeros(batch_pad,
+                                    block_tables.shape[1],
+                                    dtype=torch.int32)
+                    ])
+            
+            is_prompt_for_mm = is_prompt
 
         # Sampling-related.
         temperature = input_batch.sampling.temperature_cpu[:num_reqs]
@@ -417,9 +484,29 @@ class TTModelRunner:
         compat_sampling_used = False
         sampling_metadata = None
 
-        if self.model_config.is_multimodal_model and is_prompt:
-            multi_modal_kwargs = self._gather_multi_modal_inputs(
+        if self.model_config.is_multimodal_model and is_prompt_for_mm:
+            # Gather multimodal inputs for prefill requests
+            prefill_mm_kwargs = self._gather_multi_modal_inputs(
                 scheduler_output)
+            
+            if is_mixed:
+                # For mixed batches, create multimodal kwargs for all requests
+                # Prefill requests get their mm inputs, decode requests get None
+                multi_modal_kwargs: MultiModalKwargs = {"pixel_values": []}
+                prefill_mm_idx = 0
+                for req_idx in range(num_reqs):
+                    if is_prefill_list[req_idx]:
+                        # Prefill request: use gathered mm input
+                        multi_modal_kwargs["pixel_values"].append(
+                            prefill_mm_kwargs["pixel_values"][prefill_mm_idx]
+                        )
+                        prefill_mm_idx += 1
+                    else:
+                        # Decode request: no mm input
+                        multi_modal_kwargs["pixel_values"].append(None)
+            else:
+                # Pure prefill batch: use gathered mm kwargs directly
+                multi_modal_kwargs = prefill_mm_kwargs
         else:
             multi_modal_kwargs = {}
 
@@ -695,12 +782,11 @@ class TTModelRunner:
         model_input: TTModelInput,
     ) -> list[torch.Tensor]:
         """
-        Execute with a prebuilt input and return per-DP sampled ids without
-        mutating internal state. In DP case, called by DP rank 0 to run merged
-        batch. Note: currently does not support chunked prefill.
+        Execute with a prebuilt input, supporting mixed batches.
+        Returns per-DP sampled ids without mutating internal state.
+        In DP case, called by DP rank 0 to run merged batch.
+        Note: currently does not support chunked prefill.
         """
-        is_decode = model_input.prompt_lens is None
-
         batch_size_per_dp = model_input.unpadded_batch_size
         if not isinstance(batch_size_per_dp, list):
             batch_size_per_dp = [batch_size_per_dp]
@@ -712,74 +798,258 @@ class TTModelRunner:
         if not isinstance(sampling_params_per_dp, list):
             sampling_params_per_dp = [sampling_params_per_dp]
 
-        kwargs = {
-            "tokens": model_input.input_tokens,
-            "page_table": model_input.block_tables,
-            "kv_cache": self.kv_caches,
-        }
+        # Check if batch is mixed
+        # Mixed batch: prompt_lens is a list with both positive (prefill) and -1 (decode) values
+        is_mixed = False
+        if isinstance(model_input.prompt_lens, list):
+            prompt_lens_list = model_input.prompt_lens
+            has_prefill = any(pl > 0 for pl in prompt_lens_list)
+            has_decode = any(pl == -1 for pl in prompt_lens_list)
+            is_mixed = has_prefill and has_decode
 
-        if not is_decode:
-            kwargs["prompt_lens"] = model_input.prompt_lens
-            kwargs.update(model_input.multi_modal_kwargs)
+        if is_mixed:
+            # Mixed batch: process prefill and decode separately
+            prompt_lens_list = model_input.prompt_lens
+            is_prefill = torch.tensor(
+                [pl > 0 for pl in prompt_lens_list], dtype=torch.bool
+            )
+            prefill_indices = torch.where(is_prefill)[0]
+            decode_indices = torch.where(~is_prefill)[0]
+
+            # Process prefill requests
+            prefill_tokens = model_input.input_tokens[prefill_indices]
+            prefill_prompt_lens = [prompt_lens_list[i] for i in prefill_indices]
+            prefill_block_tables = model_input.block_tables[prefill_indices]
+
+            prefill_kwargs = {
+                "tokens": prefill_tokens,
+                "page_table": prefill_block_tables,
+                "kv_cache": self.kv_caches,
+                "prompt_lens": prefill_prompt_lens,
+            }
+
+            # Add multimodal kwargs for prefill (filter to only prefill requests)
+            if model_input.multi_modal_kwargs and "pixel_values" in model_input.multi_modal_kwargs:
+                prefill_mm_kwargs = {"pixel_values": []}
+                for idx in prefill_indices:
+                    prefill_mm_kwargs["pixel_values"].append(
+                        model_input.multi_modal_kwargs["pixel_values"][idx]
+                    )
+                prefill_kwargs.update(prefill_mm_kwargs)
+
+            # Handle empty_slots for DP if needed
             if len(batch_size_per_dp) > 1:
-                # TODO: the model should only require DP ranks, but passing
-                # "global" user ids instead for backwards compatibility.
+                # Calculate empty_slots for prefill requests only
                 stride = int(self.scheduler_config.max_num_seqs)
                 empty_slots = []
+                # For mixed batches, we need to map prefill indices to global indices
+                # This is complex with DP, so we'll pass all slots for now
+                # TODO: Refine this for proper DP support with mixed batches
                 for dp_rank, sz in enumerate(batch_size_per_dp):
                     for i in range(int(sz)):
                         empty_slots.append(dp_rank * stride + i)
-                kwargs["empty_slots"] = empty_slots
-        else:
-            kwargs["start_pos"] = model_input.input_positions
-        if self.sample_on_device_mode == "all" or (
-                self.sample_on_device_mode == "decode_only" and is_decode):
-            # Check that sampling params are the same for all DP ranks.
-            # TODO: Remove this restriction and concat sampling params in
-            # concat_dp_model_inputs once models can support mixed params.
-            non_none_params = [
-                sp for sp in sampling_params_per_dp if sp is not None
-            ]
-            assert all(sp == non_none_params[0] for sp in non_none_params), (
-                "Sampling params must be the same for all active DP ranks")
-            kwargs["sampling_params"] = non_none_params[0]
+                prefill_kwargs["empty_slots"] = empty_slots
 
-        # Execute model
-        if not is_decode:
-            tt_out = self.model.prefill_forward(**kwargs)
-        else:
+            prefill_output = self.model.prefill_forward(**prefill_kwargs)
+
+            # Process decode requests
+            num_decode = len(decode_indices)
+            # For decode, we only need the single token at position 0 (decode tokens are placed there in mixed batches)
+            decode_tokens = model_input.input_tokens[decode_indices, 0:1]  # Shape: [num_decode, 1]
+            decode_positions = model_input.input_positions[decode_indices]
+            decode_block_tables = model_input.block_tables[decode_indices]
+
+            # Pad decode batch to max_num_reqs if needed (TT models require fixed batch size)
+            # TODO: Remove once TT models can support arbitrary batch sizes.
+            max_num_reqs = self.scheduler_config.max_num_seqs
+            if num_decode < max_num_reqs:
+                batch_pad = max_num_reqs - num_decode
+                # Pad tokens with zeros (shape should be [batch_pad, 1] to match decode_tokens)
+                decode_tokens = torch.cat([
+                    decode_tokens,
+                    torch.zeros(batch_pad, 1, dtype=torch.int32)
+                ])
+                # Pad positions with -1 to indicate no position
+                decode_positions = torch.cat([
+                    decode_positions,
+                    torch.ones(batch_pad, dtype=torch.int32) * -1
+                ])
+                # Pad block tables with zeros
+                decode_block_tables = torch.cat([
+                    decode_block_tables,
+                    torch.zeros(batch_pad, decode_block_tables.shape[1], dtype=torch.int32)
+                ])
+
+            decode_kwargs = {
+                "tokens": decode_tokens,
+                "start_pos": decode_positions,
+                "page_table": decode_block_tables,
+                "kv_cache": self.kv_caches,
+                "enable_trace": self.trace_mode,
+                "read_from_device": True,
+            }
+
+            # Handle sampling params for decode
+            if self.sample_on_device_mode == "all" or (
+                    self.sample_on_device_mode == "decode_only"):
+                # Check that sampling params are the same for all DP ranks
+                non_none_params = [
+                    sp for sp in sampling_params_per_dp if sp is not None
+                ]
+                if non_none_params:
+                    assert all(sp == non_none_params[0] for sp in non_none_params), (
+                        "Sampling params must be the same for all active DP ranks")
+                    decode_kwargs["sampling_params"] = non_none_params[0]
+
             # TODO: Add encoder-decoder support
             enc_dec_kwargs: dict[str, Any] = {}
-            tt_out = self.model.decode_forward(**kwargs,
-                                               **enc_dec_kwargs,
-                                               enable_trace=self.trace_mode,
-                                               read_from_device=True)
+            decode_output = self.model.decode_forward(**decode_kwargs,
+                                                      **enc_dec_kwargs)
 
-        sampled_token_ids_per_dp: list[torch.Tensor] = []
-        start = 0
-        for dp_rank, sz in enumerate(batch_size_per_dp):
-            if sz <= 0:
-                sampled_token_ids_per_dp.append(
-                    torch.tensor([], dtype=torch.int32))
-                continue
-            if (not self.sample_on_device_mode
-                    or (self.sample_on_device_mode == "decode_only"
-                        and not is_decode)):
-                logits = tt_out[start:start + sz, -1, :]
-                next_token_ids = sample_tokens(logits,
-                                               sampling_params_per_dp[dp_rank])
+            # Combine outputs in original batch order
+            # Prefill outputs: shape [num_prefill, seq_len, vocab_size] or [num_prefill] if sampled
+            # Decode outputs: shape [num_decode, vocab_size] or [num_decode] if sampled
+            total_batch_size = model_input.input_tokens.shape[0]
+            
+            # Handle prefill output based on sample_on_device_mode
+            if (self.sample_on_device_mode == "all"):
+                # Already sampled tokens
+                prefill_sampled = prefill_output.view(-1, 1).to(torch.int32)
             else:
-                next_token_ids = tt_out[start:start + sz]
-            sampled_token_ids_per_dp.append(next_token_ids.view(sz, 1))
+                # Logits: take last token and sample
+                prefill_logits = prefill_output[:, -1, :]
+                # Use first sampling param for prefill (assuming same for all)
+                prefill_sp = sampling_params_per_dp[0] if sampling_params_per_dp[0] else None
+                if prefill_sp is None:
+                    raise ValueError("Sampling params required for prefill in mixed batch")
+                prefill_sampled = sample_tokens(prefill_logits, prefill_sp).view(-1, 1).to(torch.int32)
 
-            if is_decode:
-                # Fixed stride segments per DP rank for decode
-                start += self.scheduler_config.max_num_seqs
+            # Handle decode output based on sample_on_device_mode and actual shape
+            # Only use the first num_decode outputs (ignore padding)
+            decode_output_actual = decode_output[:num_decode]
+            
+            # Check if output is already sampled (1D or 2D with last dim = 1) or logits
+            is_sampled = (decode_output_actual.dim() == 1 or 
+                         (decode_output_actual.dim() == 2 and decode_output_actual.shape[-1] == 1))
+            
+            if (self.sample_on_device_mode == "all" or 
+                    self.sample_on_device_mode == "decode_only") or is_sampled:
+                # Already sampled tokens
+                decode_sampled = decode_output_actual.view(-1, 1).to(torch.int32)
             else:
-                # Prefill packed contiguously
-                start += sz
+                # Logits: sample
+                # Handle 3D logits [batch, seq_len, vocab_size] - extract last token
+                if decode_output_actual.dim() == 3:
+                    # Extract last token's logits: [batch, seq_len, vocab_size] -> [batch, vocab_size]
+                    decode_logits = decode_output_actual[:, -1, :]
+                elif decode_output_actual.dim() == 2:
+                    # Already 2D: [batch, vocab_size]
+                    decode_logits = decode_output_actual
+                else:
+                    raise ValueError(
+                        f"Unexpected decode output shape: {decode_output_actual.shape}, "
+                        f"expected 2D [batch, vocab_size] or 3D [batch, seq_len, vocab_size]")
+                
+                decode_sp = sampling_params_per_dp[0] if sampling_params_per_dp[0] else None
+                if decode_sp is None:
+                    raise ValueError("Sampling params required for decode in mixed batch")
+                decode_sampled = sample_tokens(decode_logits, decode_sp).view(-1, 1).to(torch.int32)
 
-        return sampled_token_ids_per_dp
+            # Combine in original order
+            combined_output = torch.zeros(
+                (total_batch_size, 1), dtype=torch.int32
+            )
+            combined_output[prefill_indices] = prefill_sampled
+            combined_output[decode_indices] = decode_sampled
+
+            # Split by DP rank for return format
+            # Batch is organized by DP rank: first batch_size_per_dp[0] requests are DP rank 0, etc.
+            sampled_token_ids_per_dp = []
+            start_idx = 0
+            for dp_rank, sz in enumerate(batch_size_per_dp):
+                if sz <= 0:
+                    sampled_token_ids_per_dp.append(
+                        torch.tensor([], dtype=torch.int32))
+                else:
+                    end_idx = start_idx + sz
+                    sampled_token_ids_per_dp.append(
+                        combined_output[start_idx:end_idx])
+                    start_idx = end_idx
+
+            return sampled_token_ids_per_dp
+
+        else:
+            # Pure batch: use existing logic
+            is_decode = model_input.prompt_lens is None
+
+            kwargs = {
+                "tokens": model_input.input_tokens,
+                "page_table": model_input.block_tables,
+                "kv_cache": self.kv_caches,
+            }
+
+            if not is_decode:
+                kwargs["prompt_lens"] = model_input.prompt_lens
+                kwargs.update(model_input.multi_modal_kwargs)
+                if len(batch_size_per_dp) > 1:
+                    # TODO: the model should only require DP ranks, but passing
+                    # "global" user ids instead for backwards compatibility.
+                    stride = int(self.scheduler_config.max_num_seqs)
+                    empty_slots = []
+                    for dp_rank, sz in enumerate(batch_size_per_dp):
+                        for i in range(int(sz)):
+                            empty_slots.append(dp_rank * stride + i)
+                    kwargs["empty_slots"] = empty_slots
+            else:
+                kwargs["start_pos"] = model_input.input_positions
+            if self.sample_on_device_mode == "all" or (
+                    self.sample_on_device_mode == "decode_only" and is_decode):
+                # Check that sampling params are the same for all DP ranks.
+                # TODO: Remove this restriction and concat sampling params in
+                # concat_dp_model_inputs once models can support mixed params.
+                non_none_params = [
+                    sp for sp in sampling_params_per_dp if sp is not None
+                ]
+                assert all(sp == non_none_params[0] for sp in non_none_params), (
+                    "Sampling params must be the same for all active DP ranks")
+                kwargs["sampling_params"] = non_none_params[0]
+
+            # Execute model
+            if not is_decode:
+                tt_out = self.model.prefill_forward(**kwargs)
+            else:
+                # TODO: Add encoder-decoder support
+                enc_dec_kwargs: dict[str, Any] = {}
+                tt_out = self.model.decode_forward(**kwargs,
+                                                   **enc_dec_kwargs,
+                                                   enable_trace=self.trace_mode,
+                                                   read_from_device=True)
+
+            sampled_token_ids_per_dp: list[torch.Tensor] = []
+            start = 0
+            for dp_rank, sz in enumerate(batch_size_per_dp):
+                if sz <= 0:
+                    sampled_token_ids_per_dp.append(
+                        torch.tensor([], dtype=torch.int32))
+                    continue
+                if (not self.sample_on_device_mode
+                        or (self.sample_on_device_mode == "decode_only"
+                            and not is_decode)):
+                    logits = tt_out[start:start + sz, -1, :]
+                    next_token_ids = sample_tokens(logits,
+                                                   sampling_params_per_dp[dp_rank])
+                else:
+                    next_token_ids = tt_out[start:start + sz]
+                sampled_token_ids_per_dp.append(next_token_ids.view(sz, 1))
+
+                if is_decode:
+                    # Fixed stride segments per DP rank for decode
+                    start += self.scheduler_config.max_num_seqs
+                else:
+                    # Prefill packed contiguously
+                    start += sz
+
+            return sampled_token_ids_per_dp
 
     def generate_runner_output(self, sampled_token_ids: torch.Tensor):
         # Cache the sampled tokens in the model runner, so that the scheduler
