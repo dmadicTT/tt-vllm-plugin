@@ -47,10 +47,10 @@ setup(
     packages=["tt_vllm_plugin", "tt_vllm_plugin.worker", "tt_vllm_plugin.v1", 
               "tt_vllm_plugin.v1.worker", "tt_vllm_plugin.model_loader"],
     install_requires=[
-        "vllm>=0.7.0",  # Flexible version to avoid conflicts
-        "transformers>=4.40.0",
-        # Note: ttnn should be installed separately as it's platform-specific
-        # torch version should match vLLM's requirements
+        "vllm<0.11",
+        "torch==2.7.1+cpu",
+        "torchvision==0.22.1+cpu",
+        "numpy<2,>=1.24.4",
     ],
     python_requires=">=3.10, <3.12",
     license="Apache-2.0",
