@@ -17,9 +17,7 @@ import os
 
 # Enable vLLM v1 architecture
 os.environ["VLLM_USE_V1"] = "1"
-# os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"  
-os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
-os.environ["LLAMA_DIR"] = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
+os.environ["HF_MODEL"] = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
 
 from vllm import LLM, SamplingParams, ModelRegistry
 
@@ -36,23 +34,9 @@ def main():
     # model = "meta-llama/Llama-3.1-8B-Instruct"
     model = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
 
-    ModelRegistry.register_model("TTLlamaForCausalLM", "models.tt_transformers.tt.generator_vllm:LlamaForCausalLM")
-    
     print("Initializing LLM with TT platform...")
     print("Note: The TT plugin should be automatically discovered via entry points")
     
-    # Initialize LLM with TT platform
-    #       "vllm_args": {
-    #     "model": "meta-llama/Llama-3.1-8B-Instruct",
-    #     "block_size": "64",
-    #     "max_model_len": "65536",
-    #     "max_num_seqs": "32",
-    #     "max_num_batched_tokens": "65536",
-    #     "num_scheduler_steps": "10",
-    #     "max-log-len": "32",
-    #     "seed": "9472",
-    #     "override_tt_config": "{}"
-    #   },
     llm = LLM(
         model=model,
         max_model_len=65536,
