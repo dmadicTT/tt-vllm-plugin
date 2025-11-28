@@ -4,254 +4,118 @@ A vLLM plugin that enables running Large Language Models (LLMs) on Tenstorrent h
 
 ## Overview
 
-This plugin extracts the Tenstorrent (TT) platform implementation from the `tt-vllm` fork and packages it as a standalone, installable vLLM plugin. It provides seamless integration with vLLM's plugin system, allowing you to use Tenstorrent hardware acceleration without modifying the vLLM codebase.
-
-## Architecture
-
-The plugin integrates with vLLM's platform plugin system, which automatically discovers and loads the plugin when TT hardware is available.
-
-```mermaid
-graph TB
-    A[vLLM Application] -->|Uses device='tt'| B[vLLM Platform System]
-    B -->|Discovers Plugin| C[TT vLLM Plugin]
-    C -->|Registers| D[TTPlatform]
-    D -->|Configures| E[TTWorker v1]
-    E -->|Uses| F[TTModelRunner]
-    F -->|Loads Models via| G[TTModelLoader]
-    G -->|Executes on| H[Tenstorrent Hardware]
-    
-    style C fill:#e1f5ff
-    style D fill:#e1f5ff
-    style E fill:#e1f5ff
-    style F fill:#e1f5ff
-    style G fill:#e1f5ff
-```
-
-### Component Structure
-
-```mermaid
-graph LR
-    A[tt_vllm_plugin] --> B[platform.py<br/>TTPlatform]
-    A --> C[worker/<br/>Shared Utilities]
-    A --> D[v1/worker/<br/>V1 Implementation]
-    A --> E[model_loader/<br/>TTModelLoader]
-    
-    C --> C1[TTModelInput]
-    C --> C2[TTSamplingParams]
-    C --> C3[Helper Functions]
-    
-    D --> D1[TTWorker]
-    D --> D2[TTModelRunner]
-    D --> D3[InputBatch]
-    
-    style A fill:#e1f5ff
-    style B fill:#ffe1f5
-    style D fill:#f5ffe1
-```
+This plugin extracts the Tenstorrent (TT) platform implementation from the [vllm fork](https://github.com/tenstorrent/vllm/tree/dev) and packages it as a standalone, installable vLLM plugin.
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.11
-- vLLM (compatible with v1 architecture)
-- Tenstorrent hardware with `ttnn` library installed
+- Release version of the `tt-metal`
 - Set `VLLM_USE_V1=1` environment variable
 
 ### Install the Plugin
 
+You have to be in the `tt-metal` python environment to install the plugin.
+
 ```bash
-# Clone or download the plugin
+source tt-metal/python_env/bin/activate
+```
+
+Then, you can install the plugin and its dependencies:
+```bash
 cd tt-vllm-plugin
-
-# Install in development mode
 pip install -e .
+```
 
-# Or build a wheel
-python setup.py bdist_wheel
-pip install dist/tt_vllm_plugin-*.whl
+In case there are dependency conflicts run this:
+```
+pip install "vllm<0.11" "torch==2.7.1+cpu" "torchvision==0.22.1+cpu" "numpy==1.26.4"
 ```
 
 ### Verify Installation
 
+Verify `tt-metal` is working correctly by running:
 ```bash
-# Check that the plugin is discoverable
-python -c "from importlib.metadata import entry_points; print([ep.name for ep in entry_points(group='vllm.platform_plugins')])"
+python examples/ttnn_test.py
+```
+
+Then verify vLLM plugin is installed correctly by running:
+```bash
+python examples/llama_3_1_8b_instruct.py
 ```
 
 You should see `tt` in the list of available platform plugins.
 
-## Usage
-
-### Basic Example
-
-```python
-import os
-os.environ["VLLM_USE_V1"] = "1"
-
-from vllm import LLM, SamplingParams
-
-# Initialize LLM with TT platform
-llm = LLM(
-    model="meta-llama/Llama-3.1-8B-Instruct",
-    device="tt",  # Plugin automatically loads
-    max_model_len=2048,
-    max_num_seqs=1,
-    override_tt_config={
-        "trace_mode": True,
-    }
-)
-
-# Generate text
-sampling_params = SamplingParams(temperature=0.0, top_p=1.0, max_tokens=50)
-outputs = llm.generate(["Hello, my name is"], sampling_params)
-print(outputs[0].outputs[0].text)
+```
+INFO 11-28 13:51:29 [__init__.py:36] Available plugins for group vllm.platform_plugins:
+INFO 11-28 13:51:29 [__init__.py:38] - tt -> tt_vllm_plugin:register
+INFO 11-28 13:51:29 [__init__.py:41] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 11-28 13:51:29 [__init__.py:232] Platform plugin tt is activated
 ```
 
-### Running the Example
+## Limitations
 
-```bash
-export VLLM_USE_V1=1
-python examples/llama_3_1_8b_instruct.py
+- Supports only v1 architecture
+- `override_tt_config` supported by [the fork](https://github.com/tenstorrent/vllm/tree/dev) is not supported in the plugin.
+
+## Performance measurements
+
+Performance benchmarks for `meta-llama/Llama-3.1-8B-Instruct` on N150 using vLLM online inference.
+
+### Benchmark Results
+
+| Metric | RPS=1 | RPS=1.5 | RPS=2 |
+|--------|-------|---------|-------|
+| **Request Rate Configured (RPS)** | 1.00 | 1.50 | 2.00 |
+| **Request Throughput (req/s)** | 0.94 | 1.37 | 1.78 |
+| **Output Token Throughput (tok/s)** | 199.73 | 290.49 | 376.65 |
+| **Total Token Throughput (tok/s)** | 389.86 | 567.01 | 735.19 |
+| **Mean TTFT (ms)** | 199.34 | 273.14 | 2962.19 |
+| **Median TTFT (ms)** | 165.70 | 185.29 | 1696.19 |
+| **P99 TTFT (ms)** | 478.80 | 2222.49 | 9569.23 |
+| **Mean TPOT (ms)** | 55.20 | 66.63 | 72.33 |
+| **Median TPOT (ms)** | 53.78 | 64.45 | 71.46 |
+| **P99 TPOT (ms)** | 90.67 | 135.37 | 125.78 |
+| **Mean ITL (ms)** | 54.28 | 63.99 | 70.68 |
+| **Median ITL (ms)** | 45.13 | 48.19 | 49.37 |
+| **P99 ITL (ms)** | 283.43 | 364.83 | 364.22 |
+| **Benchmark Duration (s)** | 530.66 | 364.87 | 281.40 |
+| **Successful Requests** | 500 | 500 | 500 |
+
+*TTFT: Time to First Token, TPOT: Time per Output Token, ITL: Inter-token Latency*
+
+### Performance Trends
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#ff6b6b','primaryTextColor':'#fff','primaryBorderColor':'#7C0000','lineColor':'#4ECDC4','secondaryColor':'#006100','tertiaryColor':'#fff'}}}%%
+xychart-beta
+    title "Token Throughput vs Request Rate"
+    x-axis [1.0, 1.5, 2.0]
+    y-axis "Throughput (tok/s)" 0 --> 800
+    line [389.86, 567.01, 735.19]
 ```
 
-## Configuration
-
-The plugin supports various TT-specific configuration options via `override_tt_config`:
-
-```python
-override_tt_config = {
-    "trace_mode": True,  # Enable ttnn tracing for model execution
-    "sample_on_device_mode": "decode_only",  # "all", "decode_only", or None
-    "dispatch_core_axis": "row",  # "row" or "col"
-    "fabric_config": "FABRIC_1D",  # Fabric configuration
-    "trace_region_size": 50000000,  # Trace region size
-    "worker_l1_size": <size>,  # Worker L1 size
-    "l1_small_size": <size>,  # L1 small size
-}
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#ff6b6b','primaryTextColor':'#fff','primaryBorderColor':'#7C0000','lineColor':'#4ECDC4','secondaryColor':'#006100','tertiaryColor':'#fff'}}}%%
+xychart-beta
+    title "Time to First Token (TTFT) - Mean and P99"
+    x-axis [1.0, 1.5, 2.0]
+    y-axis "TTFT (ms)" 0 --> 10000
+    line "Mean TTFT" [199.34, 273.14, 2962.19]
+    line "P99 TTFT" [478.80, 2222.49, 9569.23]
 ```
 
-## Testing
-
-### Offline Inference Test
-
-```bash
-export VLLM_USE_V1=1
-pytest tt_vllm_plugin/tests/test_offline_inference.py -v
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#ff6b6b','primaryTextColor':'#fff','primaryBorderColor':'#7C0000','lineColor':'#4ECDC4','secondaryColor':'#006100','tertiaryColor':'#fff'}}}%%
+xychart-beta
+    title "Time per Output Token (TPOT) - Mean"
+    x-axis [1.0, 1.5, 2.0]
+    y-axis "TPOT (ms)" 0 --> 80
+    line [55.20, 66.63, 72.33]
 ```
 
-The test verifies basic offline inference functionality with the Llama-3.1-8B-Instruct model.
-
-## Compatibility
-
-### vLLM Version
-
-- **Target**: Latest vLLM with v1 architecture support
-- **Minimum**: vLLM 0.7.0+
-- **Architecture**: vLLM v1 only (requires `VLLM_USE_V1=1`)
-
-### Python Version
-
-- **Required**: Python 3.11
-
-### Dependencies
-
-- **vLLM**: Version should match your vLLM installation
-- **torch**: Version should match vLLM's requirements (typically provided by vLLM)
-- **ttnn**: Platform-specific, install separately based on your Tenstorrent hardware setup
-- **transformers**: >=4.40.0
-
-### Known Limitations
-
-1. **v1 Architecture Only**: The plugin only supports vLLM v1 architecture. Set `VLLM_USE_V1=1` before importing vLLM.
-
-2. **Model Support**: Currently supports models that have TT-specific implementations (models with "TT" prefix in architecture name).
-
-3. **Feature Limitations**:
-   - Chunked prefill: Not supported
-   - Speculative decoding: Not supported
-   - LoRA: Not supported
-   - Prefix caching: Not supported
-   - Distributed execution: Not supported (TP/PP size must be 1)
-   - Encoder-decoder models: Limited support in V1
-
-4. **Dependency Conflicts**: 
-   - The plugin avoids hard-pinning torch versions to prevent conflicts
-   - Ensure your vLLM and torch versions are compatible
-   - If using with other TT packages (e.g., `pjrt-plugin-tt`), ensure torch version compatibility
-
-## Troubleshooting
-
-### Plugin Not Discovered
-
-- Verify installation: `pip list | grep tt-vllm-plugin`
-- Check entry points: `python -c "from importlib.metadata import entry_points; print(list(entry_points(group='vllm.platform_plugins')))"`
-- Ensure `VLLM_USE_V1=1` is set before importing vLLM
-
-### TT Hardware Not Available
-
-- Verify `ttnn` is installed and accessible
-- Check device availability: `python -c "import ttnn; print(ttnn.get_device_ids())"`
-- The plugin will return `None` from `register()` if TT hardware is not available
-
-### Import Errors
-
-- Ensure all dependencies are installed: `pip install -r requirements.txt`
-- Verify vLLM is installed and compatible
-- Check that Python version is 3.11
-
-### Model Loading Issues
-
-- Verify the model has a TT-specific implementation
-- Check that the model architecture name starts with "TT" (automatically prepended by the plugin)
-- Ensure model files are accessible
-
-## Development
-
-### Project Structure
-
-```
-tt-vllm-plugin/
-├── setup.py                 # Package setup
-├── pyproject.toml          # Modern Python packaging
-├── requirements.txt        # Runtime dependencies
-├── README.md               # This file
-├── tt_vllm_plugin/         # Main package
-│   ├── __init__.py         # Plugin registration
-│   ├── platform.py         # TTPlatform implementation
-│   ├── worker/             # Shared utilities
-│   │   ├── tt_model_runner.py  # TTModelInput, TTSamplingParams
-│   │   └── tt_worker.py         # Helper functions
-│   ├── v1/                 # V1 architecture implementation
-│   │   └── worker/
-│   │       ├── tt_worker.py      # V1 TTWorker
-│   │       ├── tt_model_runner.py # V1 TTModelRunner
-│   │       └── tt_input_batch.py  # InputBatch
-│   ├── model_loader/       # Model loading
-│   │   └── tt_loader.py     # TTModelLoader
-│   └── tests/              # Tests
-│       └── test_offline_inference.py
-└── examples/               # Example scripts
-    └── llama_3_1_8b_instruct.py
-```
-
-### Building
-
-```bash
-# Build wheel
-python setup.py bdist_wheel
-
-# Install from wheel
-pip install dist/tt_vllm_plugin-*.whl
-```
-
-## License
-
-Apache-2.0
-
-## Contributing
-
-This plugin is extracted from the `tt-vllm` fork. For issues or contributions related to the TT platform implementation, please refer to the original repository or Tenstorrent's internal development processes.
+The performance drops with 2 requests per second, as prefills are done in sequence for all models from tt_transformers library.
+To address this, [issue #33381](https://github.com/tenstorrent/tt-metal/issues/33381) is created.
 
 ## References
 
