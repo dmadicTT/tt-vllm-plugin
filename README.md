@@ -87,31 +87,31 @@ Performance benchmarks for `meta-llama/Llama-3.1-8B-Instruct` on N150 using vLLM
 ### Performance Trends
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#ff6b6b','primaryTextColor':'#fff','primaryBorderColor':'#7C0000','lineColor':'#4ECDC4','secondaryColor':'#006100','tertiaryColor':'#fff'}}}%%
+%%{init: {'theme':'dark', 'themeVariables': {'primaryColor':'#000000','primaryTextColor':'#333333','primaryBorderColor':'#000000','lineColor':'#000000','secondaryColor':'#000000','tertiaryColor':'#000000','textColor':'#333333','background':'#ffffff','mainBkgColor':'#ffffff'}}}%%
 xychart-beta
     title "Token Throughput vs Request Rate"
-    x-axis [1.0, 1.5, 2.0]
+    x-axis "Request Rate (RPS)" [1.0, 1.5, 2.0]
     y-axis "Throughput (tok/s)" 0 --> 800
     line [389.86, 567.01, 735.19]
 ```
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#ff6b6b','primaryTextColor':'#fff','primaryBorderColor':'#7C0000','lineColor':'#4ECDC4','secondaryColor':'#006100','tertiaryColor':'#fff'}}}%%
+%%{init: {'theme':'dark', 'themeVariables': {'primaryColor':'#000000','primaryTextColor':'#333333','primaryBorderColor':'#000000','lineColor':'#000000','secondaryColor':'#000000','tertiaryColor':'#000000','textColor':'#333333','background':'#ffffff','mainBkgColor':'#ffffff'}}}%%
 xychart-beta
     title "Time to First Token (TTFT) - Mean and P99"
-    x-axis [1.0, 1.5, 2.0]
+    x-axis "Request Rate (RPS)" [1.0, 1.5, 2.0]
     y-axis "TTFT (ms)" 0 --> 10000
     line "Mean TTFT" [199.34, 273.14, 2962.19]
     line "P99 TTFT" [478.80, 2222.49, 9569.23]
 ```
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#ff6b6b','primaryTextColor':'#fff','primaryBorderColor':'#7C0000','lineColor':'#4ECDC4','secondaryColor':'#006100','tertiaryColor':'#fff'}}}%%
+%%{init: {'theme':'dark', 'themeVariables': {'primaryColor':'#000000','primaryTextColor':'#333333','primaryBorderColor':'#000000','lineColor':'#000000','secondaryColor':'#000000','tertiaryColor':'#000000','textColor':'#333333','background':'#ffffff','mainBkgColor':'#ffffff'}}}%%
 xychart-beta
-    title "Time per Output Token (TPOT) - Mean"
-    x-axis [1.0, 1.5, 2.0]
-    y-axis "TPOT (ms)" 0 --> 80
-    line [55.20, 66.63, 72.33]
+    title "Inter-token Latency (ITL) - Mean"
+    x-axis "Request Rate (RPS)" [1.0, 1.5, 2.0]
+    y-axis "ITL (ms)" 0 --> 80
+    line [54.28, 63.99, 70.68]
 ```
 
 The performance drops with 2 requests per second, as prefills are done in sequence for all models from tt_transformers library.
