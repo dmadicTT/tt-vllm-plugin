@@ -17,10 +17,8 @@ import os
 
 # Enable vLLM v1 architecture
 os.environ["VLLM_USE_V1"] = "1"
-os.environ["HF_MODEL"] = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
 
-from vllm import LLM, SamplingParams, ModelRegistry
-
+from vllm import LLM, SamplingParams
 
 def main():
     from vllm.platforms import current_platform  
@@ -31,8 +29,8 @@ def main():
     print(f"Using platform: {current_platform.device_name} (OOT: {current_platform.is_out_of_tree()})")
     
     # Model configuration
-    # model = "meta-llama/Llama-3.1-8B-Instruct"
-    model = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
+    model = "meta-llama/Llama-3.1-8B-Instruct"
+    # model = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
 
     print("Initializing LLM with TT platform...")
     print("Note: The TT plugin should be automatically discovered via entry points")
@@ -40,8 +38,8 @@ def main():
     llm = LLM(
         model=model,
         max_model_len=65536,
-        max_num_seqs=1,
-        enable_chunked_prefill=False,
+        max_num_seqs=32,
+        enable_chunked_prefill=True,
         block_size=64,
         max_num_batched_tokens=65536,
         seed=9472,
@@ -58,8 +56,45 @@ def main():
     
     # Test prompts
     prompts = [
-        "Hello, my name is",
-        "The capital of France is",
+        "Tell me a joke.",
+        "What is the capital of Italy?",
+        "Explain quantum computing in simple terms.",
+        "How do you make pancakes?",
+        "What is the tallest mountain?",
+
+        "Describe a sunset.",
+        "Who wrote 1984?",
+        "What is the speed of light?",
+        "Where is the Great Barrier Reef located?",
+        "Write a short poem about rain.",
+
+        "What causes seasons?",
+        "Define artificial intelligence.",
+        "List three primary colors.",
+        "Translate 'hello' to Spanish.",
+        "Why do cats purr?",
+
+        "What is photosynthesis?",
+        "Name a famous scientist.",
+        "What is the nearest planet to Earth?",
+        "Summarize the plot of Romeo and Juliet.",
+        "Give a synonym for 'happy'.",
+
+        "What is the formula for water?",
+        "List the continents.",
+        "What is blockchain?",
+        "Describe the taste of chocolate.",
+        "Who painted the Mona Lisa?",
+
+        "How old is the universe?",
+        "Name a musical instrument.",
+        "What is the freezing point of water?",
+        "Explain gravity in one sentence.",
+        "Who is the president of the USA?",
+        
+        "How many hours are in a day?",
+        "What language is spoken in Brazil?",
+        "What is pi?"
     ]
     
     print("\nGenerating responses...")
