@@ -39,7 +39,7 @@ def main():
         model=model,
         max_model_len=65536,
         max_num_seqs=32,
-        enable_chunked_prefill=True,
+        enable_chunked_prefill=False,
         block_size=64,
         max_num_batched_tokens=65536,
         seed=9472,
