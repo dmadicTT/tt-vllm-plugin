@@ -1,14 +1,4 @@
-# Core dependencies
-# Note: vLLM version should match the version you're using
-# The plugin is designed to work with vLLM v1 architecture (VLLM_USE_V1=1)
-# vllm>=0.7.0
-
-# TT-specific dependencies
-# ttnn should be installed separately based on your Tenstorrent hardware setup
-# torch version should match vLLM's requirements (typically provided by vLLM)
-
-# Development dependencies (optional)
-# pytest>=7.0.0
-# black>=23.0.0
-# ruff>=0.1.0
-
+vllm<0.11
+torch==2.7.1+cpu
+torchvision==0.22.1+cpu
+numpy==1.26.4

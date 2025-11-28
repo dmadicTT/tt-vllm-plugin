@@ -57,6 +57,9 @@ class TTPlatform(Platform):
                 == 1), "TT backend does not support distributed execution"
         assert not vllm_config.lora_config, (
             "LoRA is not supported for TT backend")
+
+        vllm_config.scheduler_config.scheduler_cls = (
+                    "tt_vllm_plugin.v1.ascend_scheduler.AscendScheduler")
         
         # Set default block_size if not specified by user
         cache_config = vllm_config.cache_config
