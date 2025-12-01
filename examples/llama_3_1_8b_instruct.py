@@ -9,7 +9,6 @@ using the TT vLLM plugin.
 This example demonstrates basic offline inference with the plugin.
 
 Usage:
-    export VLLM_USE_V1=1
     python examples/llama_3_1_8b_instruct.py
 """
 
@@ -17,6 +16,7 @@ import os
 
 # Enable vLLM v1 architecture
 os.environ["VLLM_USE_V1"] = "1"
+os.environ["HF_MODEL"] = "meta-llama/Llama-3.1-8B-Instruct"
 
 from vllm import LLM, SamplingParams
 
@@ -28,15 +28,11 @@ def main():
     assert current_platform.is_out_of_tree(), "Platform should be OOT" 
     print(f"Using platform: {current_platform.device_name} (OOT: {current_platform.is_out_of_tree()})")
     
-    # Model configuration
-    model = "meta-llama/Llama-3.1-8B-Instruct"
-    # model = "/home/dmadic/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659/"
-
     print("Initializing LLM with TT platform...")
     print("Note: The TT plugin should be automatically discovered via entry points")
     
     llm = LLM(
-        model=model,
+        model='meta-llama/Llama-3.1-8B-Instruct',
         max_model_len=65536,
         max_num_seqs=32,
         enable_chunked_prefill=False,

@@ -53,6 +53,34 @@ INFO 11-28 13:51:29 [__init__.py:41] All plugins in this group will be loaded. S
 INFO 11-28 13:51:29 [__init__.py:232] Platform plugin tt is activated
 ```
 
+## Usage
+
+### Starting the Server
+
+To start the vLLM server, use the provided `serve.sh` script:
+
+```bash
+./serve.sh
+```
+
+This will start the server with the default configuration for `meta-llama/Llama-3.1-8B-Instruct` on `localhost:8000`.
+
+### Running Online Inference Performance Benchmark
+
+After the server is started, you can run the online inference performance test using `online_benchmark.sh`:
+
+```bash
+./online_benchmark.sh
+```
+
+This benchmark script will:
+- Connect to the running server at `localhost:8000`
+- Use the ShareGPT dataset for testing
+- Run 500 prompts at a request rate of 2 requests per second
+- Save the benchmark results to a JSON file
+
+**Note:** Make sure the server is running before executing the benchmark script.
+
 ## Limitations
 
 - Supports only v1 architecture
