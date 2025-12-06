@@ -71,6 +71,12 @@ class TTModelRunnerPooling:
         # Track request states (simpler than generation models)
         self.requests: dict[str, dict] = {}
         
+        # Request accumulation for better batching
+        # Accumulate requests until we have a good batch size or timeout
+        self.pending_requests: list = []
+        self.max_batch_size = self.scheduler_config.max_num_seqs
+        self.target_batch_size = min(64, self.max_batch_size)  # Target 64 for 8 devices * 8 per device
+        
         # Model will be set by load_model() or directly by worker
         self.model: Optional[nn.Module] = None
 
@@ -89,7 +95,7 @@ class TTModelRunnerPooling:
 
     def _prepare_model_inputs(
         self, scheduler_output: "SchedulerOutput"
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, list]:
         """
         Prepare model inputs for pooling models.
         
@@ -97,18 +103,19 @@ class TTModelRunnerPooling:
             scheduler_output: Scheduler output with scheduled requests
             
         Returns:
-            Tuple of (tokens, attention_mask) tensors
+            Tuple of (tokens, attention_mask, req_data_list) tensors
         """
         # Gather all scheduled requests
         scheduled_reqs = scheduler_output.scheduled_new_reqs
         
         if not scheduled_reqs:
-            return None, None
+            return None, None, []
         
         # Get token IDs and create attention masks
         token_ids_list = []
         attention_mask_list = []
         max_seq_len = 0
+        req_data_list = []
         
         for req_data in scheduled_reqs:
             req_id = req_data.req_id
@@ -123,6 +130,7 @@ class TTModelRunnerPooling:
             seq_len = len(prompt_token_ids)
             max_seq_len = max(max_seq_len, seq_len)
             token_ids_list.append(prompt_token_ids)
+            req_data_list.append(req_data)
         
         # Pad all sequences to max_seq_len
         batch_size = len(token_ids_list)
@@ -134,7 +142,7 @@ class TTModelRunnerPooling:
             tokens[i, :seq_len] = torch.tensor(token_ids, dtype=torch.int64)
             attention_mask[i, :seq_len] = 1.0
         
-        return tokens, attention_mask
+        return tokens, attention_mask, req_data_list
 
     @torch.no_grad()
     def execute_model(
@@ -151,7 +159,7 @@ class TTModelRunnerPooling:
             ModelRunnerOutput with embeddings in pooler_output field
         """
         # Prepare inputs
-        tokens, attention_mask = self._prepare_model_inputs(scheduler_output)
+        tokens, attention_mask, req_data_list = self._prepare_model_inputs(scheduler_output)
         
         if tokens is None:
             # No requests to process
@@ -165,6 +173,21 @@ class TTModelRunnerPooling:
                 pooler_output=[],
             )
         
+        batch_size = tokens.shape[0]
+        logger.info(
+            f"TTModelRunnerPooling: processing batch_size={batch_size}, "
+            f"target_batch_size={self.target_batch_size}, max_batch_size={self.max_batch_size}, "
+            f"num_scheduled_reqs={len(scheduler_output.scheduled_new_reqs)}"
+        )
+        
+        # Warn if batch size is much smaller than target (indicates scheduler not batching efficiently)
+        if batch_size < self.target_batch_size // 4:
+            logger.warning(
+                f"Small batch size detected: {batch_size} (target: {self.target_batch_size}). "
+                f"This may indicate vLLM scheduler is not batching efficiently. "
+                f"Consider increasing --max-num-seqs or checking scheduler configuration."
+            )
+        
         # Execute model forward pass
         assert self.model is not None, "Model not loaded. Call load_model() first."
         embeddings = self.model.forward(
@@ -175,11 +198,10 @@ class TTModelRunnerPooling:
         # Convert embeddings to list of tensors format expected by vLLM
         # embeddings shape: [batch_size, embedding_dim]
         # pooler_output should be list[Optional[torch.Tensor]] - one tensor per request
-        batch_size = embeddings.shape[0]
         pooler_output = [embeddings[i].cpu() for i in range(batch_size)]
         
         # Get request IDs in order
-        req_ids = [req_data.req_id for req_data in scheduler_output.scheduled_new_reqs]
+        req_ids = [req_data.req_id for req_data in req_data_list]
         req_id_to_index = {req_id: i for i, req_id in enumerate(req_ids)}
         
         # sampled_token_ids should be list[list[int]] - one list per request (empty for pooling)

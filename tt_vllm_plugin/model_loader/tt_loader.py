@@ -73,6 +73,7 @@ class TTModelLoader(BaseModelLoader):
             max_seq_len=model_config.max_model_len,
             tt_data_parallel=data_parallel,
             optimizations=optimizations,
+            vllm_config=vllm_config,
         )
         return model
 
