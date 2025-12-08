@@ -45,14 +45,7 @@ class TTPlatform(Platform):
         )
         vllm_config.scheduler_config.enable_chunked_prefill = False
         vllm_config.scheduler_config.chunked_prefill_enabled = False
-        # Ensure max_num_batched_tokens is at least max_model_len or DEFAULT,
-        # but respect user's setting if they specified a higher value
-        min_batched_tokens = max(
-            vllm_config.scheduler_config.max_model_len,
-            DEFAULT_MAX_NUM_BATCHED_TOKENS,
-        )
-        if vllm_config.scheduler_config.max_num_batched_tokens < min_batched_tokens:
-            vllm_config.scheduler_config.max_num_batched_tokens = min_batched_tokens
+        logger.info(f"max_num_batched_tokens: {vllm_config.scheduler_config.max_num_batched_tokens}")
 
         assert not vllm_config.speculative_config, (
             "Speculative decoding is not yet supported for TT backend")
