@@ -9,7 +9,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.model_loader.base_loader import BaseModelLoader
 from vllm.model_executor.model_loader.utils import get_model_architecture
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.model_loader.tt_loader")
 
 
 class TTModelLoader(BaseModelLoader):

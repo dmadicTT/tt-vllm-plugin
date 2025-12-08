@@ -29,7 +29,7 @@ from tt_vllm_plugin.model_loader.tt_loader import TTModelLoader
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.v1.worker.tt_model_runner_pooling")
 
 
 class TTModelRunnerPooling:

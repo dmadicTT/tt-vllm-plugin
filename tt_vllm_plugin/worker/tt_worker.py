@@ -12,7 +12,7 @@ import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.worker.tt_worker")
 
 
 def get_num_available_blocks_tt(vllm_config: VllmConfig) -> int:

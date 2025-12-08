@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.v1.worker.tt_model_runner")
 
 
 class TTModelRunner:

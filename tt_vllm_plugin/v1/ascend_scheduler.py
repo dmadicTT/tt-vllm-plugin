@@ -12,7 +12,7 @@ from typing import Optional, Union
 
 from vllm.config import VllmConfig
 from vllm.distributed.kv_events import KVEventBatch
-from vllm.logger import logger
+from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.utils import cdiv
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
@@ -23,6 +23,7 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.structured_output import StructuredOutputManager
 
+logger = init_logger("vllm.tt_vllm_plugin.v1.ascend_scheduler")
 
 class AscendScheduler(Scheduler):
     """This Scheduler extends vllm's original v1 scheduler
@@ -88,6 +89,10 @@ class AscendScheduler(Scheduler):
         req_index = 0
         while self.waiting and token_budget > 0 and self._forced_mode != 0:
             if len(self.running) == self.max_num_running_reqs:
+                logger.info(
+                    f"AscendScheduler: hit max_num_running_reqs={self.max_num_running_reqs}, "
+                    f"scheduled_so_far={len(scheduled_new_reqs)}"
+                )
                 break
 
             request = self.waiting.peek_request()
@@ -204,6 +209,13 @@ class AscendScheduler(Scheduler):
                 delay_cache_blocks=load_kv_async)
             if new_blocks is None:
                 # The request cannot be scheduled.
+                logger.warning(
+                    f"AscendScheduler: KV allocation failed after scheduling "
+                    f"{len(scheduled_new_reqs)} new reqs. "
+                    f"free_blocks={self.kv_cache_manager.block_pool.get_num_free_blocks()}, "
+                    f"token_budget_remaining={token_budget}, "
+                    f"waiting_queue_size={len(self.waiting)}"
+                )
                 break
 
             # KVConnector: update internal state after allocation.
@@ -257,6 +269,15 @@ class AscendScheduler(Scheduler):
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.extendleft(skipped_waiting_requests)  # type: ignore
+
+        # Log prefill scheduling summary
+        if len(scheduled_new_reqs) > 0:
+            logger.debug(
+                f"AscendScheduler prefill done: scheduled={len(scheduled_new_reqs)}, "
+                f"token_budget_remaining={token_budget}, "
+                f"waiting_remaining={len(self.waiting)}, "
+                f"running={len(self.running)}"
+            )
 
         # If no prefill requests are scheduled (or prefill skipped),
         # schedule decode requests next (unless prefill is forced).
@@ -441,6 +462,16 @@ class AscendScheduler(Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()  # type: ignore
+        
+        # Log scheduling batch size for debugging
+        if len(scheduled_new_reqs) > 0 or len(scheduled_running_reqs) > 0:
+            logger.info(
+                f"AscendScheduler: batch_size={len(scheduled_new_reqs)} new + "
+                f"{len(scheduled_running_reqs)} running, "
+                f"total_tokens={total_num_scheduled_tokens}, "
+                f"waiting={len(self.waiting)}, running={len(self.running)}"
+            )
+        
         return scheduler_output
 
     def _check_watermark_for_prefill(self,

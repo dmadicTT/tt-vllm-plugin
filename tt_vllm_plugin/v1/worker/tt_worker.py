@@ -27,7 +27,7 @@ from vllm.tasks import SupportedTask
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.v1.worker.tt_worker")
 print("=== tt_worker.py module is being imported ===")
 logger.info("=== tt_worker.py module is being imported ===")
 
