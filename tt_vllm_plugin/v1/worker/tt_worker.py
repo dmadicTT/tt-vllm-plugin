@@ -16,6 +16,8 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.worker.worker_base import WorkerBase
 
 from tt_vllm_plugin.v1.worker.tt_model_runner import TTModelRunner
+from tt_vllm_plugin.v1.worker.tt_model_runner_pooling import TTModelRunnerPooling
+from tt_vllm_plugin.model_loader.tt_loader import TTModelLoader
 from tt_vllm_plugin.worker.tt_model_runner import TTModelInput
 from tt_vllm_plugin.worker.tt_worker import (close_mesh_device, get_mesh_grid,
                                    get_num_available_blocks_tt,
@@ -25,7 +27,7 @@ from vllm.tasks import SupportedTask
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.v1.worker.tt_worker")
 print("=== tt_worker.py module is being imported ===")
 logger.info("=== tt_worker.py module is being imported ===")
 
@@ -62,8 +64,9 @@ class TTWorker(WorkerBase):
         logger.info("Initializing TT device...")
         dp_rank = self.vllm_config.parallel_config.data_parallel_rank
         if dp_rank == 0:
+            # Pass model_config to device_params_from_override_tt_config for BGE detection
             self.mesh_device = open_mesh_device(
-                self.model_config.override_tt_config, self.trace_mode, dp_rank)
+                self.model_config.override_tt_config, self.trace_mode, dp_rank, self.model_config)
             self.device_config.device = self.mesh_device
             assert self.mesh_device is not None
             self.device_config.num_devices = self.mesh_device.get_num_devices()
@@ -73,16 +76,73 @@ class TTWorker(WorkerBase):
             # Num devices is required for determining num blocks in KV cache.
             self.device_config.num_devices = mesh_grid[0] * mesh_grid[1]
         # Init ModelRunner here, so that we have access to self.mesh_device.
-        self.model_runner: TTModelRunner = TTModelRunner(
-            vllm_config=self.vllm_config,
-            mesh_device=self.mesh_device,
-            trace_mode=self.trace_mode,
-        )
+        # We'll determine the runner type after loading the model in load_model()
+        # For now, create a placeholder that will be replaced
+        self.model_runner: Optional[Union[TTModelRunner, TTModelRunnerPooling]] = None
 
     def load_model(self):
         # Only DP rank 0 loads the model
         if self.vllm_config.parallel_config.data_parallel_rank == 0:
-            self.model_runner.load_model()
+            # First, load the model to determine its type
+            loader = TTModelLoader(self.load_config)
+            model = loader.load_model(
+                vllm_config=self.vllm_config,
+                model_config=self.model_config
+            )
+            
+            # Detect if this is a pooling model
+            # Check if model has forward() but not prefill_forward()/decode_forward()
+            # This is a heuristic - pooling models typically only have forward()
+            is_pooling = (
+                hasattr(model, 'forward') and 
+                not (hasattr(model, 'prefill_forward') and hasattr(model, 'decode_forward')) and
+                hasattr(model, 'get_embedding_dim')
+            )
+            
+            # Also check model_config.runner_type if set
+            runner_type = getattr(self.model_config, 'runner_type', None)
+            if runner_type == 'pooling':
+                is_pooling = True
+            elif runner_type == 'generate':
+                is_pooling = False
+            
+            # Create the appropriate runner
+            if is_pooling:
+                logger.info("Detected pooling model, using TTModelRunnerPooling")
+                self.model_runner = TTModelRunnerPooling(
+                    vllm_config=self.vllm_config,
+                    mesh_device=self.mesh_device,
+                    trace_mode=self.trace_mode,
+                )
+                # Set the model directly (skip loader.load_model in runner)
+                self.model_runner.model = model
+            else:
+                logger.info("Detected generation model, using TTModelRunner")
+                self.model_runner = TTModelRunner(
+                    vllm_config=self.vllm_config,
+                    mesh_device=self.mesh_device,
+                    trace_mode=self.trace_mode,
+                )
+                # Set the model directly (skip loader.load_model in runner)
+                self.model_runner.model = model
+                # Generation models still need KV cache initialization
+                # This will be called later in initialize_from_config
+        else:
+            # For non-DP rank 0, we still need to create a runner placeholder
+            # The actual model won't be loaded, but the runner structure is needed
+            runner_type = getattr(self.model_config, 'runner_type', 'generate')
+            if runner_type == 'pooling':
+                self.model_runner = TTModelRunnerPooling(
+                    vllm_config=self.vllm_config,
+                    mesh_device=self.mesh_device,
+                    trace_mode=self.trace_mode,
+                )
+            else:
+                self.model_runner = TTModelRunner(
+                    vllm_config=self.vllm_config,
+                    mesh_device=self.mesh_device,
+                    trace_mode=self.trace_mode,
+                )
 
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """
@@ -146,7 +206,12 @@ class TTWorker(WorkerBase):
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Allocate TT KV cache (only DP rank 0) and initialize persistent
         input batch (all DP ranks) with the specified kv_cache_config.
+        Pooling models don't need KV cache, so skip initialization for them.
         """
+        if isinstance(self.model_runner, TTModelRunnerPooling):
+            # Pooling models don't need KV cache
+            logger.info("Skipping KV cache initialization for pooling model")
+            return
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def initialize_cache(self, num_gpu_blocks: int,
@@ -164,6 +229,7 @@ class TTWorker(WorkerBase):
         scheduler_output: "SchedulerOutput",
     ) -> Optional[ModelRunnerOutput]:
         assert self.is_driver_worker, "There should only be one Worker for TT"
+        assert self.model_runner is not None, "Model runner not initialized. Call load_model() first."
         output = self.model_runner.execute_model(scheduler_output)
         return output
 
@@ -177,7 +243,12 @@ class TTWorker(WorkerBase):
         self, scheduler_output: Optional["SchedulerOutput"]
     ) -> tuple[Optional[TTModelInput], int]:
         """Called by each DP rank to build model input from scheduler output.
+        Pooling models don't use TTModelInput, so return None.
         """
+        assert self.model_runner is not None, "Model runner not initialized. Call load_model() first."
+        if isinstance(self.model_runner, TTModelRunnerPooling):
+            # Pooling models handle input preparation internally
+            return None, 0
         model_input = None
         if scheduler_output is not None:
             model_input = self.model_runner.build_model_input(scheduler_output)
@@ -187,6 +258,10 @@ class TTWorker(WorkerBase):
     def build_dp_decode_gather_input(
             self, model_input: Optional[TTModelInput],
             max_blocks_decode_batch: int) -> dict[str, torch.Tensor]:
+        assert self.model_runner is not None, "Model runner not initialized. Call load_model() first."
+        if isinstance(self.model_runner, TTModelRunnerPooling):
+            # Pooling models don't use decode gather input
+            return {"int_inputs": torch.tensor([]), "float_inputs": torch.tensor([])}
         return self.model_runner.build_dp_decode_gather_input(
             model_input, max_blocks_decode_batch)
 
@@ -197,7 +272,17 @@ class TTWorker(WorkerBase):
         """Called only by DP rank 0 to concatenate DP-sized inputs and execute.
         Returns a stacked tensor [world, max_num_seqs, 1] of sampled ids.
         Each DP slice is right-padded with zeros to max_num_seqs; empty entries
-        are zeros. Same behavior for both prefill and decode."""
+        are zeros. Same behavior for both prefill and decode.
+        
+        For pooling models, this is not used as they don't support DP yet.
+        """
+        assert self.model_runner is not None, "Model runner not initialized. Call load_model() first."
+        if isinstance(self.model_runner, TTModelRunnerPooling):
+            # Pooling models don't support DP yet
+            # Return empty tensor for now
+            world = self.vllm_config.parallel_config.data_parallel_size
+            B = int(self.model_runner.scheduler_config.max_num_seqs)
+            return torch.zeros((world, B, 1), dtype=torch.int32)
 
         assert self.vllm_config.parallel_config.data_parallel_rank == 0, \
             "concat_and_execute_dp must run on DP rank 0"
@@ -232,7 +317,20 @@ class TTWorker(WorkerBase):
     def apply_dp_execution_result(
             self, sampled_token_ids: torch.Tensor) -> ModelRunnerOutput:
         """Called by each DP rank to apply sampled tokens to internal caches.
+        Pooling models don't use this method.
         """
+        assert self.model_runner is not None, "Model runner not initialized. Call load_model() first."
+        if isinstance(self.model_runner, TTModelRunnerPooling):
+            # Pooling models don't support DP yet
+            return ModelRunnerOutput(
+                req_ids=[],
+                req_id_to_index={},
+                sampled_token_ids=[],
+                spec_token_ids=None,
+                logprobs=None,
+                prompt_logprobs_dict={},
+                pooler_output=[],
+            )
         # Trim to active local batch size to drop padding rows.
         num_reqs = self.model_runner.input_batch.num_reqs
         sampled_token_ids = sampled_token_ids[:num_reqs]
@@ -256,8 +354,10 @@ class TTWorker(WorkerBase):
 
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         """Get supported tasks by delegating to the model runner."""
+        assert self.model_runner is not None, "Model runner not initialized. Call load_model() first."
         return self.model_runner.get_supported_tasks()
     
     def get_model(self) -> nn.Module:
         """Get the underlying model."""
+        assert self.model_runner is not None, "Model runner not initialized. Call load_model() first."
         return self.model_runner.get_model()

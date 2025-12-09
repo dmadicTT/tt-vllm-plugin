@@ -21,5 +21,21 @@ def register_models():
         "models.tt_transformers.tt.generator_vllm:LlamaForCausalLM"
     )
     
+    # Register BGE embedding model (TTBertModel)
+    # This allows vLLM to find the TT-specific BGE implementation
+    try:
+        ModelRegistry.register_model(
+            "TTBertModel",
+            "models.demos.wormhole.bge_large_en.demo.generator_vllm:BGEForEmbedding"
+        )
+    except Exception as e:
+        # If registration fails (e.g., module not found), log warning but continue
+        # This allows the plugin to work even if BGE model isn't available
+        import logging
+        logging.warning(
+            f"Failed to register TTBertModel (BGE): {e}. "
+            "BGE model may not be available. Ensure tt-metal is in Python path."
+        )
+    
     # Add additional model registrations here as needed
     # ModelRegistry.register_model("AnotherModel", "path.to:ModelClass")

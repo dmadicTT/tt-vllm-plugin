@@ -12,7 +12,7 @@ import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.worker.tt_worker")
 
 
 def get_num_available_blocks_tt(vllm_config: VllmConfig) -> int:
@@ -159,7 +159,7 @@ def reset_fabric(override_tt_config, num_devices):
         ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
 
 
-def device_params_from_override_tt_config(override_tt_config, trace_mode):
+def device_params_from_override_tt_config(override_tt_config, trace_mode, model_config=None):
     device_params = {}
 
     if trace_mode:
@@ -174,6 +174,39 @@ def device_params_from_override_tt_config(override_tt_config, trace_mode):
 
     if override_tt_config and "l1_small_size" in override_tt_config:
         device_params["l1_small_size"] = override_tt_config["l1_small_size"]
+
+    # Support num_command_queues parameter
+    if override_tt_config and "num_command_queues" in override_tt_config:
+        device_params["num_command_queues"] = override_tt_config["num_command_queues"]
+    
+    # Auto-detect BGE models and set required parameters
+    # BGE models need 2 command queues for _capture_bge_trace_2cqs()
+    if model_config is not None:
+        # Check model name from various possible attributes
+        model_name = None
+        if hasattr(model_config, 'model'):
+            model_name = model_config.model
+        elif hasattr(model_config, 'hf_config'):
+            hf_config = model_config.hf_config
+            if hasattr(hf_config, 'name_or_path'):
+                model_name = hf_config.name_or_path
+            elif hasattr(hf_config, '_name_or_path'):
+                model_name = hf_config._name_or_path
+            elif isinstance(hf_config, dict):
+                model_name = hf_config.get('name_or_path') or hf_config.get('_name_or_path')
+        
+        # Check if this is a BGE model by model name
+        # BGE models typically have "bge" in their HuggingFace model name
+        is_bge = model_name and 'bge' in str(model_name).lower()
+        
+        # For BGE models, set required device parameters if not already set
+        if is_bge and "num_command_queues" not in device_params:
+            logger.info(f"Detected BGE model ({model_name}), setting num_command_queues=2")
+            device_params["num_command_queues"] = 2
+            if "l1_small_size" not in device_params:
+                device_params["l1_small_size"] = 24576
+            if trace_mode and (not override_tt_config or "trace_region_size" not in override_tt_config):
+                device_params["trace_region_size"] = 6434816
 
     return device_params
 
@@ -223,12 +256,12 @@ def get_mesh_grid(dp_rank=0):
     return mesh_grid
 
 
-def open_mesh_device(override_tt_config, trace_mode, dp_rank=0):
+def open_mesh_device(override_tt_config, trace_mode, dp_rank=0, model_config=None):
     assert dp_rank == 0, "open_mesh_device must run on DP rank 0"
     mesh_grid = get_mesh_grid(dp_rank)
 
     device_params = device_params_from_override_tt_config(
-        override_tt_config, trace_mode)
+        override_tt_config, trace_mode, model_config)
 
     # Set fabric before opening the device
     num_devices_requested = mesh_grid[0] * mesh_grid[1]
@@ -241,6 +274,8 @@ def open_mesh_device(override_tt_config, trace_mode, dp_rank=0):
     )
     logger.info("multidevice with %d devices and grid %s is created",
                 mesh_device.get_num_devices(), mesh_grid)
+    if "num_command_queues" in device_params:
+        logger.info("Device initialized with %d command queues", device_params["num_command_queues"])
     return mesh_device
 
 

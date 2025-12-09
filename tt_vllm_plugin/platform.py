@@ -9,7 +9,6 @@ import vllm.envs as envs
 from vllm.inputs import ProcessorInputs, PromptType
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
-from vllm.utils import DEFAULT_MAX_NUM_BATCHED_TOKENS
 
 from vllm.platforms.interface import Platform, PlatformEnum
 
@@ -21,7 +20,7 @@ else:
     VllmConfig = None
     PoolingParams = None
 
-logger = init_logger(__name__)
+logger = init_logger("vllm.tt_vllm_plugin.platform")
 
 
 class TTPlatform(Platform):
@@ -45,10 +44,7 @@ class TTPlatform(Platform):
         )
         vllm_config.scheduler_config.enable_chunked_prefill = False
         vllm_config.scheduler_config.chunked_prefill_enabled = False
-        vllm_config.scheduler_config.max_num_batched_tokens = max(
-            vllm_config.scheduler_config.max_model_len,
-            DEFAULT_MAX_NUM_BATCHED_TOKENS,
-        )
+        logger.info(f"max_num_batched_tokens: {vllm_config.scheduler_config.max_num_batched_tokens}")
 
         assert not vllm_config.speculative_config, (
             "Speculative decoding is not yet supported for TT backend")
