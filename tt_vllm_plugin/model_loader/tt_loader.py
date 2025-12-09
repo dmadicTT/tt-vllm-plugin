@@ -1,15 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import inspect
+
 from torch import nn
 
-import vllm.envs as envs
 from vllm.config import ModelConfig, VllmConfig
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.base_loader import BaseModelLoader
 from vllm.model_executor.model_loader.utils import get_model_architecture
 
 logger = init_logger("vllm.tt_vllm_plugin.model_loader.tt_loader")
+
+
+def _method_accepts_param(method, param_name: str) -> bool:
+    """Check if a method accepts a specific parameter name."""
+    try:
+        sig = inspect.signature(method)
+        # Check if param is explicitly defined or if **kwargs is present
+        for name, param in sig.parameters.items():
+            if name == param_name:
+                return True
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                return True  # Method has **kwargs, so it accepts any keyword arg
+        return False
+    except (ValueError, TypeError):
+        return False
 
 
 class TTModelLoader(BaseModelLoader):
@@ -53,27 +69,25 @@ class TTModelLoader(BaseModelLoader):
             ], f"""Invalid optimizations configuration `{optimizations}`, 
             allowed values are 'performance' or 'accuracy'"""
 
-        # Model receives max_batch_size as batch_size_per_dp * dp_size
-        if envs.VLLM_USE_V1:
-            data_parallel = vllm_config.parallel_config.data_parallel_size
-            max_batch_size = scheduler_config.max_num_seqs * data_parallel
-        else:
-            data_parallel = 1
-            if (model_config.override_tt_config
-                    and 'data_parallel' in model_config.override_tt_config):
-                data_parallel = model_config.override_tt_config[
-                    'data_parallel']
-                logger.info("Overriding data_parallel to %d", data_parallel)
-            max_batch_size = scheduler_config.max_num_seqs
+        data_parallel = vllm_config.parallel_config.data_parallel_size
+        max_batch_size = scheduler_config.max_num_seqs * data_parallel
+
+        # Build kwargs for initialize_vllm_model
+        # Only pass vllm_config if the method accepts it (needed for pooling models like BGE)
+        init_kwargs = {
+            "max_seq_len": model_config.max_model_len,
+            "tt_data_parallel": data_parallel,
+            "optimizations": optimizations,
+        }
+        
+        if _method_accepts_param(model_class.initialize_vllm_model, "vllm_config"):
+            init_kwargs["vllm_config"] = vllm_config
 
         model = model_class.initialize_vllm_model(
             model_config.hf_config,
             device_config.device,
             max_batch_size,
-            max_seq_len=model_config.max_model_len,
-            tt_data_parallel=data_parallel,
-            optimizations=optimizations,
-            vllm_config=vllm_config,
+            **init_kwargs,
         )
         return model
 
