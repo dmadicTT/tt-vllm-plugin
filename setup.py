@@ -1,6 +1,12 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+"""
+Custom wheel builder for tt-vllm-plugin.
+
+All package metadata and dependencies are defined in pyproject.toml.
+This file only provides the custom BdistWheel class for platform-specific wheel building.
+"""
 
 from setuptools import setup
 from wheel.bdist_wheel import bdist_wheel
@@ -39,27 +45,7 @@ class BdistWheel(bdist_wheel):
 
 
 setup(
-    name="tt-vllm-plugin",
     cmdclass={
         "bdist_wheel": BdistWheel,
     },
-    version="0.1.0",
-    packages=["tt_vllm_plugin", "tt_vllm_plugin.worker", "tt_vllm_plugin.v1", 
-              "tt_vllm_plugin.v1.worker", "tt_vllm_plugin.model_loader"],
-    install_requires=[
-        "vllm<0.11",
-        "torch==2.7.1+cpu",
-        "torchvision==0.22.1+cpu",
-        "numpy<2,>=1.24.4",
-    ],
-    python_requires=">=3.10, <3.12",
-    license="Apache-2.0",
-    entry_points={
-        "vllm.platform_plugins": ["tt = tt_vllm_plugin:register"],
-        "vllm.general_plugins": ["tt_model_registry = tt_vllm_plugin:register_models"],
-    },
-    description="vLLM plugin for Tenstorrent hardware acceleration",
-    long_description=open("README.md").read() if __import__("os").path.exists("README.md") else "",
-    long_description_content_type="text/markdown",
 )
-
