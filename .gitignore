@@ -9,5 +9,9 @@ __pycache__
 *.whl
 venv*/**
 
+# Build artifacts
+build/
+dist/
+
 datasets/**
 *.tensorbin

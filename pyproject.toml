@@ -10,7 +10,7 @@ name = "tt-vllm-plugin"
 version = "0.1.0"
 description = "vLLM plugin for Tenstorrent hardware acceleration"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"  # Match vLLM's Python support
+requires-python = ">=3.10,<3.12"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "Tenstorrent AI ULC"}
@@ -21,13 +21,11 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 dependencies = [
-    "vllm>=0.7.0",
-    "transformers>=4.40.0",
+    "vllm==0.10.1.1",
 ]
 
 [project.optional-dependencies]
@@ -37,3 +35,11 @@ dev = [
     "ruff>=0.1.0",
 ]
 
+[project.entry-points."vllm.platform_plugins"]
+tt = "tt_vllm_plugin:register"
+
+[project.entry-points."vllm.general_plugins"]
+tt_model_registry = "tt_vllm_plugin:register_models"
+
+[tool.setuptools.packages.find]
+include = ["tt_vllm_plugin*"]
