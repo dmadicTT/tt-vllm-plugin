@@ -38,7 +38,30 @@ def get_num_available_blocks_tt(vllm_config: VllmConfig) -> int:
     is_wormhole = "wormhole_b0" in ttnn.get_arch_name()
     num_devices_per_model = (device_config.num_devices // data_parallel)
 
-    if (("Llama-3.1-8B" in model_config.model or "Mistral-7B"
+    max_batch = scheduler_config.max_num_seqs
+    max_model_len = scheduler_config.max_model_len
+    
+    # Check if this is an embedding model using the explicit flag in override_tt_config
+    # This flag is set by embedding models (Qwen3-Embedding, BGE, etc.) in their
+    # initialize_vllm_model method to ensure proper KV cache allocation
+    is_embedding_model = (
+        hasattr(model_config, 'override_tt_config') and
+        model_config.override_tt_config is not None and
+        model_config.override_tt_config.get("is_embedding_model", False)
+    )
+    
+    # Fallback: also check runner_type for backward compatibility
+    if not is_embedding_model:
+        is_embedding_model = (
+            hasattr(model_config, 'runner_type') and model_config.runner_type == 'pooling'
+        )
+    
+    if is_embedding_model:
+        # For embedding models, ensure we have enough blocks for max_num_seqs concurrent requests
+        # Each request needs ceil(max_model_len / block_size) blocks
+        # Total tokens needed = max_num_seqs * max_model_len
+        max_tokens_all_users = max_batch * max_model_len
+    elif (("Llama-3.1-8B" in model_config.model or "Mistral-7B"
          in model_config.model or "gemma-3-4b" in model_config.model)
             and num_devices_per_model == 1 and is_wormhole):
         # Llama8B, Mistral7B, and gemma3-4b on N150
