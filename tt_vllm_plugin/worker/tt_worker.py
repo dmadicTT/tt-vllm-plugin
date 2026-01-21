@@ -44,9 +44,9 @@ def get_num_available_blocks_tt(vllm_config: VllmConfig) -> int:
     # Check if this is an embedding model using the explicit flag in override_tt_config
     # This flag is set by embedding models (Qwen3-Embedding, BGE, etc.) in their
     # initialize_vllm_model method to ensure proper KV cache allocation
+    has_override_tt_config = hasattr(model_config, 'override_tt_config') and model_config.override_tt_config is not None
     is_embedding_model = (
-        hasattr(model_config, 'override_tt_config') and
-        model_config.override_tt_config is not None and
+        has_override_tt_config and
         model_config.override_tt_config.get("is_embedding_model", False)
     )
     
@@ -56,11 +56,24 @@ def get_num_available_blocks_tt(vllm_config: VllmConfig) -> int:
             hasattr(model_config, 'runner_type') and model_config.runner_type == 'pooling'
         )
     
+    # Debug logging to diagnose embedding model detection
+    logger.debug(
+        f"Embedding model detection: has_override_tt_config={has_override_tt_config}, "
+        f"override_tt_config={model_config.override_tt_config if has_override_tt_config else None}, "
+        f"is_embedding_model_flag={model_config.override_tt_config.get('is_embedding_model', False) if has_override_tt_config else False}, "
+        f"runner_type={getattr(model_config, 'runner_type', None)}, "
+        f"is_embedding_model={is_embedding_model}"
+    )
+    
     if is_embedding_model:
         # For embedding models, ensure we have enough blocks for max_num_seqs concurrent requests
         # Each request needs ceil(max_model_len / block_size) blocks
         # Total tokens needed = max_num_seqs * max_model_len
         max_tokens_all_users = max_batch * max_model_len
+        logger.info(
+            f"Embedding model detected: max_tokens_all_users={max_tokens_all_users} "
+            f"(max_batch={max_batch} * max_model_len={max_model_len})"
+        )
     elif (("Llama-3.1-8B" in model_config.model or "Mistral-7B"
          in model_config.model or "gemma-3-4b" in model_config.model)
             and num_devices_per_model == 1 and is_wormhole):
